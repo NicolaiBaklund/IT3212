@@ -15,15 +15,6 @@ venv/
 # --- Jupyter Notebook checkpoints ---
 .ipynb_checkpoints/
 
-# --- Data ---
-data/
-*.csv
-*.tsv
-*.zip
-*.h5
-*.pkl
-*.npy
-*.npz
 
 # --- Model checkpoints ---
 *.ckpt
