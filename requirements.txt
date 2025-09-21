@@ -5,3 +5,5 @@ matplotlib
 cv2
 tensorflow
 torch
+geopy
+plotly
