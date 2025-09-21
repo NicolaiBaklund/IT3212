@@ -1,5 +1,8 @@
 import pandas as pd
 
+"""
+Started using this late, is used in for instance plot_all_feeders.ipynb
+"""
 class data:
     """
     Base data class containing file paths and common data functionality
