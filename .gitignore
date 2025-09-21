@@ -15,7 +15,6 @@ venv/
 # --- Jupyter Notebook checkpoints ---
 .ipynb_checkpoints/
 
-
 # --- Model checkpoints ---
 *.ckpt
 *.pth

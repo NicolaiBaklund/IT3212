@@ -2,8 +2,9 @@ numpy
 pandas
 scikit-learn
 matplotlib
-cv2
+opencv-python
 tensorflow
 torch
 geopy
 plotly
+ipykernel
