@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 
 """
 Started using this late, is used in for instance plot_all_feeders.ipynb
@@ -393,7 +394,6 @@ class feeder(data):
             print(f"  Min consumption: {non_null_data.min():.2f}")
             print(f"  Max consumption: {non_null_data.max():.2f}")
         
-        return fig
     
     
     def get_missing_analysis(self):
@@ -864,4 +864,212 @@ class feeder(data):
             'processed_data': df,  # Full data with all analysis columns
             'bounds_data': df[['datetime', 'lower_bound', 'upper_bound']].copy()
         }
+
+    def _rolling_zscore_outliers(self, df, window_hours, threshold=3):
+        """
+        Private method to detect outliers using rolling Z-score method.
+        
+        This function calculates Z-scores using a rolling window approach, where the mean 
+        and standard deviation are computed over a sliding window centered at each point.
+        Points with absolute Z-scores exceeding the threshold are flagged as outliers.
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            DataFrame containing time series data with a 'consumption' column
+        window_hours : int
+            Size of the rolling window in hours. This determines how many data points
+            (assuming hourly data) are used to calculate the local mean and std deviation.
+        threshold : float, default=3
+            Z-score threshold for outlier detection.
+            
+        Returns:
+        --------
+        pandas.Series
+            Boolean mask where True indicates outliers (points exceeding threshold)
+        """
+        df = df.copy()
+        
+        # Calculate rolling mean and standard deviation
+        roll_mean = df['consumption'].rolling(window_hours, center=True, min_periods=1).mean()
+        roll_std = df['consumption'].rolling(window_hours, center=True, min_periods=1).std()
+        
+        # Calculate Z-score: (value - local_mean) / local_std
+        # Add small constant to std to prevent division by zero
+        z = (df['consumption'] - roll_mean) / (roll_std + 1e-9)
+        
+        # Return boolean mask where absolute Z-score exceeds threshold
+        return np.abs(z) > threshold
+
+    def apply_zscore(self, iterations=3, window_hours_list=None, thresholds=None, quantile=0.75):
+        """
+        Apply iterative Z-score outlier removal and capping to this feeder's consumption data.
+        
+        This method performs multiple iterations of Z-score outlier detection and capping,
+        where each iteration uses progressively smaller windows and potentially different thresholds.
+        Outliers are capped at the specified quantile of the data from the previous iteration.
+        
+        Parameters:
+        -----------
+        iterations : int, default=3
+            Number of iterations to perform
+        window_hours_list : list, optional
+            List of window sizes (in hours) for each iteration. If None, uses [30*24, 14*24, 7*24]
+            Length should match iterations parameter
+        thresholds : list, optional
+            List of Z-score thresholds for each iteration. If None, uses [2.75, 2.7, 2.7]
+            Length should match iterations parameter
+        quantile : float, default=0.75
+            Quantile to use for capping outliers (0.75 = 75th percentile)
+            
+        Returns:
+        --------
+        dict
+            Dictionary containing:
+            - 'processed_df': DataFrame with all intermediate and final processed columns
+            - 'outlier_masks': List of boolean masks for each iteration
+            - 'quantiles_used': List of quantile values used for capping in each iteration
+            - 'iterations_summary': Summary statistics for each iteration
+            - 'feeder_id': ID of this feeder
+            
+        Notes:
+        ------
+        - Updates self.consumption_data with the final processed data
+        - Creates columns: 'consumption_capped_1', 'consumption_capped_2', etc. for each iteration
+        - Original 'consumption' column is preserved
+        - Requires consumption data to be loaded first
+        
+        Example:
+        --------
+        >>> feeder = feeder('A1')
+        >>> result = feeder.apply_zscore(iterations=3, thresholds=[2.75, 2.7, 2.7])
+        >>> final_data = result['processed_df']['consumption_capped_3']
+        """
+        
+        # Check if consumption data is available
+        if self.consumption_data is None or self.consumption_data.empty:
+            raise ValueError(f"No consumption data available for feeder {self.feeder_id}. Load data first.")
+        
+        # Set default parameters if not provided
+        if window_hours_list is None:
+            window_hours_list = [30 * 24, 14 * 24, 7 * 24]  # 30 days, 14 days, 7 days
+        
+        if thresholds is None:
+            thresholds = [2.75, 2.7, 2.7]
+        
+        # Validate parameters
+        if len(window_hours_list) != iterations:
+            raise ValueError(f"window_hours_list length ({len(window_hours_list)}) must match iterations ({iterations})")
+        
+        if len(thresholds) != iterations:
+            raise ValueError(f"thresholds length ({len(thresholds)}) must match iterations ({iterations})")
+        
+        # Work with a copy of the consumption data
+        df = self.consumption_data.copy()
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        
+        print(f"\n🔍 APPLYING Z-SCORE OUTLIER DETECTION TO FEEDER {self.feeder_id}")
+        print(f"="*70)
+        print(f"Initial data shape: {df.shape}")
+        print(f"Iterations: {iterations}")
+        print(f"Window sizes (hours): {window_hours_list}")
+        print(f"Thresholds: {thresholds}")
+        print(f"Capping quantile: {quantile*100:.0f}th percentile")
+        
+        # Initialize tracking variables
+        outlier_masks = []
+        quantiles_used = []
+        iterations_summary = []
+        
+        # Store original consumption for reference
+        current_consumption_col = 'consumption'
+        
+        # Perform iterative outlier detection and capping
+        for i in range(iterations):
+            iteration_num = i + 1
+            window_hours = window_hours_list[i]
+            threshold = thresholds[i]
+            
+            print(f"\n--- Iteration {iteration_num} ---")
+            print(f"Window: {window_hours} hours ({window_hours/24:.1f} days)")
+            print(f"Threshold: {threshold}")
+            
+            # Create temporary DataFrame for Z-score calculation
+            df_temp = df.copy()
+            df_temp['consumption'] = df[current_consumption_col]
+            
+            # Apply Z-score outlier detection
+            zscore_mask = self._rolling_zscore_outliers(df_temp, window_hours, threshold=threshold)
+            outliers_count = zscore_mask.sum()
+            
+            # Calculate quantile for capping
+            percentile_value = df[current_consumption_col].quantile(quantile)
+            
+            # Create new capped consumption column
+            new_consumption_col = f'consumption_capped_{iteration_num}'
+            df[new_consumption_col] = df[current_consumption_col].copy()
+            df.loc[zscore_mask, new_consumption_col] = percentile_value
+            
+            # Store results
+            outlier_masks.append(zscore_mask)
+            quantiles_used.append(percentile_value)
+            
+            # Calculate statistics for this iteration
+            original_stats = df[current_consumption_col].describe()
+            capped_stats = df[new_consumption_col].describe()
+            
+            iteration_summary = {
+                'iteration': iteration_num,
+                'window_hours': window_hours,
+                'threshold': threshold,
+                'outliers_detected': outliers_count,
+                'outlier_percentage': (outliers_count / len(df)) * 100,
+                'quantile_used': percentile_value,
+                'original_mean': original_stats['mean'],
+                'original_std': original_stats['std'],
+                'capped_mean': capped_stats['mean'],
+                'capped_std': capped_stats['std']
+            }
+            
+            iterations_summary.append(iteration_summary)
+            
+            print(f"Outliers detected: {outliers_count:,} ({(outliers_count/len(df)*100):.2f}%)")
+            print(f"Capping value ({quantile*100:.0f}th percentile): {percentile_value:.2f}")
+            print(f"Mean change: {original_stats['mean']:.2f} → {capped_stats['mean']:.2f}")
+            print(f"Std change: {original_stats['std']:.2f} → {capped_stats['std']:.2f}")
+            
+            # Update current consumption column for next iteration
+            current_consumption_col = new_consumption_col
+        
+        # Update the feeder's consumption data with the final result
+        final_processed_data = df[['datetime', current_consumption_col]].copy()
+        final_processed_data.rename(columns={current_consumption_col: 'consumption'}, inplace=True)
+        self.consumption_data = final_processed_data
+        
+        # Create final summary
+        final_summary = {
+            'feeder_id': self.feeder_id,
+            'processed_df': df,
+            'outlier_masks': outlier_masks,
+            'quantiles_used': quantiles_used,
+            'iterations_summary': iterations_summary,
+            'final_consumption_column': current_consumption_col,
+            'total_original_outliers': sum(mask.sum() for mask in outlier_masks),
+            'original_consumption_stats': df['consumption'].describe().to_dict(),
+            'final_consumption_stats': df[current_consumption_col].describe().to_dict()
+        }
+        
+        print(f"\n{'='*50}")
+        print(f"FINAL SUMMARY - FEEDER {self.feeder_id}")
+        print(f"{'='*50}")
+        print(f"Total iterations: {iterations}")
+        print(f"Total outliers across all iterations: {final_summary['total_original_outliers']:,}")
+        print(f"Final consumption column: {current_consumption_col}")
+        print(f"Original mean: {final_summary['original_consumption_stats']['mean']:.2f}")
+        print(f"Final mean: {final_summary['final_consumption_stats']['mean']:.2f}")
+        print(f"Original std: {final_summary['original_consumption_stats']['std']:.2f}")
+        print(f"Final std: {final_summary['final_consumption_stats']['std']:.2f}")
+        print(f"✅ Updated feeder consumption data with final processed values")
+        
+        return final_summary
 
