@@ -61,9 +61,9 @@ def cap_outliers(feeder_data,
             threshold=stage1_threshold
         )
         
-        percentile_75_1 = df_feeder['consumption'].quantile(0.75)
+        percentile_75_1 = df_feeder['consumption'].rolling(window_hours_1, center=True, min_periods=1).quantile(0.75)
         df_feeder['consumption_capped_1'] = df_feeder['consumption'].copy()
-        df_feeder.loc[zscore_mask_1, 'consumption_capped_1'] = percentile_75_1
+        df_feeder.loc[zscore_mask_1, 'consumption_capped_1'] = percentile_75_1[zscore_mask_1]
         
         # Stage 2: Second iteration on already capped data
         window_hours_2 = stage2_window_days * 24
@@ -75,9 +75,9 @@ def cap_outliers(feeder_data,
             threshold=stage2_threshold
         )
         
-        percentile_75_2 = df_feeder['consumption_capped_1'].quantile(0.75)
+        percentile_75_2 = df_feeder['consumption_capped_1'].rolling(window_hours_2, center=True, min_periods=1).quantile(0.75)
         df_feeder['consumption_capped_2'] = df_feeder['consumption_capped_1'].copy()
-        df_feeder.loc[zscore_mask_2, 'consumption_capped_2'] = percentile_75_2
+        df_feeder.loc[zscore_mask_2, 'consumption_capped_2'] = percentile_75_2[zscore_mask_2]
         
         # Stage 3: Third iteration on second capped data
         window_hours_3 = stage3_window_days * 24
@@ -89,9 +89,9 @@ def cap_outliers(feeder_data,
             threshold=stage3_threshold
         )
         
-        percentile_75_3 = df_feeder['consumption_capped_2'].quantile(0.75)
+        percentile_75_3 = df_feeder['consumption_capped_2'].rolling(window_hours_3, center=True, min_periods=1).quantile(0.75)
         df_feeder['consumption_capped_final'] = df_feeder['consumption_capped_2'].copy()
-        df_feeder.loc[zscore_mask_3, 'consumption_capped_final'] = percentile_75_3
+        df_feeder.loc[zscore_mask_3, 'consumption_capped_final'] = percentile_75_3[zscore_mask_3]
         
         # Keep only necessary columns
         df_feeder['consumption'] = df_feeder['consumption_capped_final']
