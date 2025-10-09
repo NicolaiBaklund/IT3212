@@ -5,7 +5,8 @@ from PIL import Image
 
 # --------------------------
 # Data loading
-# --------------------------
+
+
 def load_grayscale_faces(root_dir, pattern="*_aligned*.png"):
     """
     Recursively loads grayscale PNGs under root_dir/**/pattern.
