@@ -1,4 +1,4 @@
-#data/ # Ignore data folder
+data/ # Ignore data folder
 
 # --- Python ---
 __pycache__/
