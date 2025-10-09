@@ -69,3 +69,53 @@ def align_face_bgr(
     return aligned, True, {'confidence': face['confidence'], 'landmarks_src': src}
 
 # ===================================================================
+
+def process_folder(
+    in_dir: str,
+    out_dir: str,
+    target_size: int = 256,
+    grayscale_after: bool = False,
+    normalize_0_1: bool = False,
+    min_conf: float = 0.85
+):
+    os.makedirs(out_dir, exist_ok=True)
+    detector = MTCNN()
+    failed = []
+
+    for root, _, files in os.walk(in_dir):
+        for fname in files:
+            if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.webp')):
+                in_path = os.path.join(root, fname)
+                print(f"Processing: {in_path}", flush=True)
+                rel_dir = os.path.relpath(root, in_dir)
+                out_subdir = os.path.join(out_dir, rel_dir)
+                os.makedirs(out_subdir, exist_ok=True)
+                out_path = os.path.join(out_subdir, os.path.splitext(fname)[0] + f'_aligned_{target_size}.png')
+
+                img = cv2.imread(in_path)
+                if img is None:
+                    failed.append((in_path, 'read_error'))
+                    continue
+
+                aligned, ok, info = align_face_bgr(img, detector, target_size=target_size, min_conf=min_conf)
+                if not ok:
+                    failed.append((in_path, f"detect_or_align_failed(conf={info.get('confidence',0):.2f})"))
+                    continue
+
+                # Post steps (optional): grayscale/normalize AFTER alignment
+                to_save = aligned
+                if grayscale_after:
+                    to_save = cv2.cvtColor(to_save, cv2.COLOR_BGR2GRAY) #type: ignore
+
+                if normalize_0_1:
+                    # Save float PNG (or scale back to 0-255 uint8 as needed)
+                    to_save = to_save.astype(np.float32) / 255.0 #type: ignore
+
+                # Ensure type is uint8 for standard PNG/JPG
+                if to_save.dtype != np.uint8: #type: ignore
+                    to_save = np.clip(to_save * 255.0, 0, 255).astype(np.uint8) if normalize_0_1 else to_save.astype(np.uint8) #type: ignore
+
+                cv2.imwrite(out_path, to_save) #type: ignore
+
+
+    return failed
