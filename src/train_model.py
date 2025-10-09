@@ -1,4 +1,3 @@
-
 import os
 import shutil
 import random
@@ -6,6 +5,7 @@ from PCA_and_LDA import run_PCA_LDA
 from sklearn.svm import SVC
 from sklearn.metrics import accuracy_score
 from transform_test_data import transform_test_data
+import stat
 
 def split_train_test(input_dir, train_dir, test_dir, train_ratio=0.8, seed=42):
     persons = [d for d in os.listdir(input_dir) if os.path.isdir(os.path.join(input_dir, d))]
@@ -20,6 +20,14 @@ def split_train_test(input_dir, train_dir, test_dir, train_ratio=0.8, seed=42):
         shutil.copytree(os.path.join(input_dir, person), os.path.join(test_dir, person), dirs_exist_ok=True)
     return train_persons, test_persons
 
+def handle_remove_readonly(func, path, exc):
+    import os
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception:
+        pass
+
 def cross_validate_pca_lda(input_dir, k=50, u=5, num_folds=5):
     results = []
     results_pca = []
@@ -30,9 +38,9 @@ def cross_validate_pca_lda(input_dir, k=50, u=5, num_folds=5):
         test_dir = os.path.join(input_dir, f"test_fold_{fold}")
         # Rydd opp gamle fold-mapper hvis de finnes
         if os.path.exists(train_dir):
-            shutil.rmtree(train_dir)
+            shutil.rmtree(train_dir, onerror=handle_remove_readonly)
         if os.path.exists(test_dir):
-            shutil.rmtree(test_dir)
+            shutil.rmtree(test_dir, onerror=handle_remove_readonly)
         # Split data
         train_persons, test_persons = split_train_test(input_dir, train_dir, test_dir, seed=fold)
         # Kjør PCA+LDA på treningsdata
@@ -63,8 +71,8 @@ def cross_validate_pca_lda(input_dir, k=50, u=5, num_folds=5):
         results_pca.append(acc_pca)
         
         # Slett fold-mappene for å spare plass
-        shutil.rmtree(train_dir)
-        shutil.rmtree(test_dir)
+        shutil.rmtree(train_dir, onerror=handle_remove_readonly)
+        shutil.rmtree(test_dir, onerror=handle_remove_readonly)
     #Vis gjennomsnitt og std av resultatene
     print(f"\nGjennomsnittlig nøyaktighet over {num_folds} fold med PCA+LDA: {sum(results)/num_folds:.4f} ± { (sum((x - sum(results)/num_folds) ** 2 for x in results) / num_folds) ** 0.5:.4f}")
     print(f"Gjennomsnittlig nøyaktighet over {num_folds} fold med PCA only: {sum(results_pca)/num_folds:.4f} ± { (sum((x - sum(results_pca)/num_folds) ** 2 for x in results_pca) / num_folds) ** 0.5:.4f}")

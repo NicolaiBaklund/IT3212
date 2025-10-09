@@ -1,6 +1,0 @@
-Finne en oversikt over mange fjes som man kan bruke i PCA dette gir da et 
-vektorrom som representerer ikke bare ansiktsutrykk klassene, men også 
-ulike fjes 
-
-
-Les om scikit-learns Pipeline 

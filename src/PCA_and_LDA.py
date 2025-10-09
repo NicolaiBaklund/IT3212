@@ -4,6 +4,7 @@ import numpy as np
 # pip install scikit-learn
 from sklearn.decomposition import PCA
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+import matplotlib.pyplot as plt
 
 
 def run_PCA_LDA(base_folder: str, k: int = 200, u: int = 5, num_classes: int = 8, run_lda: bool = True):
@@ -122,3 +123,45 @@ def get_label_index(class_label):
         if name in class_label.lower():
             return idx
     raise ValueError(f"Ukjent klasselabel i filnavn: {class_label}")
+
+def visualize_fisherfaces(base_folder, k=70, u=0, num_classes=8, num_fisherfaces=7):
+    Y_fisher, Z_pca, pca, lda, mean_image, labels = run_PCA_LDA(base_folder, k=k, u=u, num_classes=num_classes, run_lda=True)
+    eigenfaces = pca.components_[u:]
+    fisherfaces = lda.scalings_.T  # evt. lda.coef_
+    img_size = int(np.sqrt(eigenfaces.shape[1]))
+
+    print("eigenfaces shape:", eigenfaces.shape)
+    print("fisherfaces shape:", fisherfaces.shape)
+    print("Eksempel på fisherface-vektor:", fisherfaces[0])
+    print("Unike verdier i fisherfaces:", np.unique(fisherfaces))
+
+    # Visualiser fisherface-vektorene direkte
+    plt.figure()
+    for i in range(min(num_fisherfaces, fisherfaces.shape[0])):
+        plt.subplot(1, num_fisherfaces, i+1)
+        plt.plot(fisherfaces[i])
+        plt.title(f'Fisherface vector {i+1}')
+    plt.show()
+
+    # Visualiser eigenfaces direkte
+    plt.figure()
+    for i in range(min(7, eigenfaces.shape[0])):
+        plt.subplot(1, 7, i+1)
+        plt.imshow(eigenfaces[i].reshape((img_size, img_size)), cmap='gray')
+        plt.title(f'Eigenface {i+1}')
+        plt.axis('off')
+    plt.show()
+
+    # Visualiser Fisherfaces som bilder
+    plt.figure(figsize=(14, 2))
+    for i in range(min(num_fisherfaces, fisherfaces.shape[0])):
+        fisherface_pca = fisherfaces[i]
+        fisherface_img = np.dot(fisherface_pca, eigenfaces)
+        fisherface_img = fisherface_img + mean_image
+        # Prøv uten normalisering først
+        plt.subplot(1, num_fisherfaces, i+1)
+        plt.imshow(fisherface_img.reshape((img_size, img_size)), cmap='gray')
+        plt.title(f'Fisherface {i+1}')
+        plt.axis('off')
+    plt.suptitle("De første Fisherfacene")
+    plt.show()
