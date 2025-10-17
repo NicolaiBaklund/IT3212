@@ -24,6 +24,7 @@ class PCA(ImageDataset):
     def fit(self, dataset: ImageDataset):
         """Fit the PCA model using an ImageDataset instance.
         Computes the covariance matrix, eigenvalues, and eigenvectors, then stores the top components.
+        If num_samples < num_features, uses dual PCA approach for efficiency. Covariance matrix = XX^t/(n-1) instead of X^tX/(n-1).
         Parameters:
             dataset (ImageDataset): An object providing .data, .num_samples, .num_features, .mean, and .centered_data.
         Returns:
@@ -36,20 +37,65 @@ class PCA(ImageDataset):
         self.mean = dataset.mean
         self.centered_data = dataset.centered_data
 
-        # Compute covariance matrix
-        self.cov_matrix = np.cov(self.centered_data, rowvar=False)
+        # Dual PCA approach if num_samples < num_features
+        if self.num_samples < self.num_features:
+            print("Using dual PCA approach.")
+            print("Computing smaller covariance matrix...")
+            C = (self.centered_data @ self.centered_data.T) / (self.num_samples - 1)
+            print("Computing eigenvalues and eigenvectors of the smaller covariance matrix...")
+            eigvals_small, U = np.linalg.eigh(C)
 
-        # Compute eigenvalues and eigenvectors
-        eigenvalues, eigenvectors = np.linalg.eigh(self.cov_matrix)
+            # sort descending
+            idx = np.argsort(eigvals_small)[::-1]
+            eigvals_small = eigvals_small[idx]
+            U = U[:, idx]
 
-        # Sort eigenvalues and corresponding eigenvectors
-        sorted_indices = np.argsort(eigenvalues)[::-1]
-        sorted_eigenvalues = eigenvalues[sorted_indices]
-        sorted_eigenvectors = eigenvectors[:, sorted_indices]
+            # keep only positive / non-tiny eigenvalues
+            mask = eigvals_small > 1e-12
+            eigvals_keep = eigvals_small[mask]
+            U_keep = U[:, mask]
 
-        # Select the top n_components
-        self.eigenvalues = sorted_eigenvalues[:self.n_components]
-        self.components = sorted_eigenvectors[:, :self.n_components]
+            # map back to feature space (each column becomes one eigenvector)
+            V_cols = []
+            for i in range(eigvals_keep.shape[0]):
+                v = self.centered_data.T @ U_keep[:, i]
+                v /= np.sqrt((self.num_samples - 1) * eigvals_keep[i])  # correct scaling
+                # optional: v /= np.linalg.norm(v)  # if you want to re-normalize
+                V_cols.append(v)
+
+            V = np.column_stack(V_cols)  # shape (num_features, r_kept)
+
+            # select requested number of components
+            r = min(self.n_components, V.shape[1])
+            self.components = V[:, :r]                  # (num_features, r)
+            self.eigenvalues = eigvals_keep[:r]         # align 1:1 with components
+
+            # (optional) explained variance ratio
+            total_var = eigvals_keep.sum()
+            self.explained_variance_ratio_ = self.eigenvalues / total_var
+
+
+
+        else:
+            print("Using standard PCA approach.")
+            # Compute covariance matrix
+            print("Computing covariance matrix...")
+            self.cov_matrix = np.cov(self.centered_data, rowvar=False)
+
+            # Compute eigenvalues and eigenvectors
+            print("Computing eigenvalues and eigenvectors...")
+            eigenvalues, eigenvectors = np.linalg.eigh(self.cov_matrix)
+
+            # Sort eigenvalues and corresponding eigenvectors
+            sorted_indices = np.argsort(eigenvalues)[::-1]
+            sorted_eigenvalues = eigenvalues[sorted_indices]
+            sorted_eigenvectors = eigenvectors[:, sorted_indices]
+
+            # Select the top n_components
+            self.eigenvalues = sorted_eigenvalues[:self.n_components]
+            self.components = sorted_eigenvectors[:, :self.n_components]
+            total_var = self.eigenvalues.sum()
+            self.explained_variance_ratio_ = self.eigenvalues / total_var 
 
     def transform(self, X):
         """Project input data X onto the learned principal components.
@@ -95,12 +141,7 @@ class PCA(ImageDataset):
     def explained_variance(self):
         """Return the eigenvalues (variances) and the explained-variance ratio.
         """
-        if not hasattr(self, "eigenvalues") or self.eigenvalues is None:
-            raise ValueError("PCA model is not fitted yet. Call fit(...) first.")
-        vals = self.eigenvalues
-        total = float(vals.sum())
-        ratio = vals / total if total > 0.0 else np.zeros_like(vals)
-        return vals, ratio
+        return self.eigenvalues, self.explained_variance_ratio_
     
     def reconstruct_n(self, X, n_components):
         """Reconstruct data using only the top n_components principal components.
@@ -108,7 +149,10 @@ class PCA(ImageDataset):
             X (np.ndarray): Original data of shape (n_samples, n_features).
             n_components (int): Number of principal components to use for reconstruction.
         Returns:
-            np.ndarray: Reconstructed data of shape (n_samples, n_features).
+            X_reconstructed (np.ndarray): Reconstructed data of shape (n_samples, n_features).
+            components_subset (np.ndarray): The principal components used for reconstruction.
+            X_transformed (np.ndarray): The PCA-transformed data of shape (n_samples, n_components).
+            mean (np.ndarray): The mean image vector used for centering.
         """
         if n_components > self.n_components:
             raise ValueError(f"n_components ({n_components}) cannot be greater than fitted components ({self.n_components}).")

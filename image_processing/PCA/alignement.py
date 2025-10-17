@@ -119,3 +119,60 @@ def process_folder(
 
 
     return failed
+
+
+
+
+def process_single_image(
+    in_path: str,
+    out_path: str,
+    target_size: int = 256,
+    grayscale_after: bool = False,
+    normalize_0_1: bool = False,
+    min_conf: float = 0.85,
+    detector: MTCNN = None # type: ignore
+):
+    """
+    Process a single image file: detect, align, (optionally) convert to grayscale and/or normalize,
+    then save to out_path.
+
+    Returns (success: bool, info: dict).
+    info contains keys like 'confidence', 'landmarks_src' or an 'error' message on failure.
+    """
+    if detector is None:
+        detector = MTCNN()
+
+    img = cv2.imread(in_path)
+    if img is None:
+        return False, {'error': 'read_error'}
+
+    aligned, ok, info = align_face_bgr(img, detector, target_size=target_size, min_conf=min_conf)
+    if not ok:
+        return False, info
+
+    to_save = aligned
+    if grayscale_after:
+        to_save = cv2.cvtColor(to_save, cv2.COLOR_BGR2GRAY) #type: ignore
+
+    if normalize_0_1:
+        to_save = to_save.astype(np.float32) / 255.0 #type: ignore
+
+    # Ensure output directory exists
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    # Ensure uint8 for typical image formats
+    if to_save.dtype != np.uint8: #type: ignore
+        if normalize_0_1:
+            to_write = np.clip(to_save * 255.0, 0, 255).astype(np.uint8) #type: ignore
+        else:
+            to_write = to_save.astype(np.uint8) #type: ignore
+    else:
+        to_write = to_save
+
+    saved = cv2.imwrite(out_path, to_write) #type: ignore
+    if not saved:
+        return False, {'error': 'write_failed'}
+
+    return True, {'confidence': info.get('confidence', 0.0), 'landmarks_src': info.get('landmarks_src', None)}
