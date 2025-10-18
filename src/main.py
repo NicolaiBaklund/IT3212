@@ -3,14 +3,22 @@ from process import process_folder_recursively
 from PCA_and_LDA import run_PCA_LDA
 from train_model import cross_validate_pca_lda
 from  PCA_and_LDA import visualize_fisherfaces
+from pathlib import Path
+
+# 1. Definer base-mappen for prosjektet.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# 2. Definer roten til data-mappene (som er data/mood_detection)
+# Vi bygger stien fra IT3212 -> data -> mood_detection
+DATA_ROOT = BASE_DIR / "data" / "mood_detection"
+
+# 3. Definer de endelige banene ved å bruke DATA_ROOT
+INPUT_DIR = DATA_ROOT / "images_processed"
+PROCESSED_DIR = DATA_ROOT / "images2-foss"
+TEST_DIR = DATA_ROOT / "test"
+TRAIN_DIR = DATA_ROOT / "train"
 
 
-
-# Konfigurasjon
-INPUT_DIR = r"C:\Users\nicos\lokaleprosjekter\GitHub\IT3212\data\mood_detection\images_processed"
-PROCESSED_DIR = r"C:\Users\nicos\lokaleprosjekter\GitHub\IT3212\data\mood_detection\images2-foss"
-TEST_DIR = r"C:\Users\nicos\lokaleprosjekter\GitHub\IT3212\data\mood_detection\test"
-TRAIN_DIR = r"C:\Users\nicos\lokaleprosjekter\GitHub\IT3212\data\mood_detection\train"
 TARGET_SIZE = 256
 MIN_CONF = 0.85
 

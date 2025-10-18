@@ -8,3 +8,6 @@ torch
 geopy
 plotly
 ipykernel
+Pillow
+mtcnn
+
