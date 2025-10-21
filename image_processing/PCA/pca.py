@@ -64,7 +64,7 @@ class PCA(ImageDataset):
                 V_cols.append(v)
 
             V = np.column_stack(V_cols)  # shape (num_features, r_kept)
-
+            print(f"Computed {V.shape[1]} principal components from {self.num_samples} samples.")
             # select requested number of components
             r = min(self.n_components, V.shape[1])
             self.components = V[:, :r]                  # (num_features, r)
@@ -77,25 +77,9 @@ class PCA(ImageDataset):
 
 
         else:
-            print("Using standard PCA approach.")
-            # Compute covariance matrix
-            print("Computing covariance matrix...")
-            self.cov_matrix = np.cov(self.centered_data, rowvar=False)
+            print("SVD is not yet implemented...")
 
-            # Compute eigenvalues and eigenvectors
-            print("Computing eigenvalues and eigenvectors...")
-            eigenvalues, eigenvectors = np.linalg.eigh(self.cov_matrix)
-
-            # Sort eigenvalues and corresponding eigenvectors
-            sorted_indices = np.argsort(eigenvalues)[::-1]
-            sorted_eigenvalues = eigenvalues[sorted_indices]
-            sorted_eigenvectors = eigenvectors[:, sorted_indices]
-
-            # Select the top n_components
-            self.eigenvalues = sorted_eigenvalues[:self.n_components]
-            self.components = sorted_eigenvectors[:, :self.n_components]
-            total_var = self.eigenvalues.sum()
-            self.explained_variance_ratio_ = self.eigenvalues / total_var 
+        
 
     def transform(self, X):
         """Project input data X onto the learned principal components.
