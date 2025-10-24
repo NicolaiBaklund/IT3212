@@ -41,6 +41,7 @@ class PCA(ImageDataset):
         if self.num_samples < self.num_features:
             print("Using dual PCA approach.")
             print("Computing smaller covariance matrix...")
+            print("If dimensions of ImageDataset are to large, this may take some time...")
             C = (self.centered_data @ self.centered_data.T) / (self.num_samples - 1)
             print("Computing eigenvalues and eigenvectors of the smaller covariance matrix...")
             eigvals_small, U = np.linalg.eigh(C)
@@ -124,17 +125,18 @@ class PCA(ImageDataset):
 
     def explained_variance(self):
         """Return the eigenvalues (variances) and the explained-variance ratio.
+        Returns:
+            tuple: (eigenvalues, explained_variance_ratio)
         """
         return self.eigenvalues, self.explained_variance_ratio_
     
-    def reconstruct_n(self, X, n_components):
+    def transform_and_reconstruct_n(self, X, n_components):
         """Reconstruct data using only the top n_components principal components.
         Parameters:
             X (np.ndarray): Original data of shape (n_samples, n_features).
             n_components (int): Number of principal components to use for reconstruction.
         Returns:
             X_reconstructed (np.ndarray): Reconstructed data of shape (n_samples, n_features).
-            components_subset (np.ndarray): The principal components used for reconstruction.
             X_transformed (np.ndarray): The PCA-transformed data of shape (n_samples, n_components).
             mean (np.ndarray): The mean image vector used for centering.
         """
@@ -144,4 +146,19 @@ class PCA(ImageDataset):
         components_subset = self.components[:, :n_components]
         X_transformed = np.dot(X_centered, components_subset)
         X_reconstructed = np.dot(X_transformed, components_subset.T) + self.mean
-        return X_reconstructed, components_subset, X_transformed, self.mean
+        return X_reconstructed, X_transformed, self.mean
+    
+    def reconstruct_n(self, X_transformed, n_components):
+        """Reconstruct data from its PCA-transformed representation using only the top n_components principal components.
+        Parameters:
+            X_transformed (np.ndarray): Data in the reduced PCA space of shape (n_samples, n_components).
+            n_components (int): Number of principal components to use for reconstruction.
+        Returns:
+            X_reconstructed (np.ndarray): Reconstructed data of shape (n_samples, n_features).
+
+        """
+        if n_components > self.n_components:
+            raise ValueError(f"n_components ({n_components}) cannot be greater than fitted components ({self.n_components}).")
+        components_subset = self.components[:, :n_components]
+        X_reconstructed = np.dot(X_transformed[:, :n_components], components_subset.T) + self.mean
+        return X_reconstructed 
