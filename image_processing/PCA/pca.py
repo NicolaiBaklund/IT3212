@@ -41,7 +41,7 @@ class PCA(ImageDataset):
         if self.num_samples < self.num_features:
             print("Using dual PCA approach.")
             print("Computing smaller covariance matrix...")
-            print("If dimensions of ImageDataset are to large, this may take some time...")
+            print("If dimensions of ImageDataset are too large, this may take some time...")
             C = (self.centered_data @ self.centered_data.T) / (self.num_samples - 1)
             print("Computing eigenvalues and eigenvectors of the smaller covariance matrix...")
             eigvals_small, U = np.linalg.eigh(C)
