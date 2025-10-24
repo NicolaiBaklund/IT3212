@@ -34,6 +34,9 @@ def rename_dataset(base_dir: str = base_dir):
             new_filename = f"img{i:02d}{ext}"
             new_file = os.path.join(new_path, new_filename)
 
+            if os.path.exists(new_file):
+                print(f"Warning: {new_filename} already exists in {new_folder_name}. Skipping rename of {filename}.")
+                continue
             os.rename(old_file, new_file)
 
         print(f"Renamed {len(images)} images in {new_folder_name}")
