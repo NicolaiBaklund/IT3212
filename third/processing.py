@@ -27,6 +27,7 @@ class EmotionImageProcessor:
     """
     A comprehensive processing class for facial emotion recognition dataset.
     Loads images, performs train-test splits, and provides feature extraction methods.
+    
     """
     
     def __init__(self, dataset_path):
@@ -38,6 +39,8 @@ class EmotionImageProcessor:
         """
         self.dataset_path = Path(dataset_path)
         self.images_path = self.dataset_path / "images"
+        if not self.images_path.exists():
+            self.images_path = self.dataset_path
         self.csv_path = self.dataset_path / "facial-emotion-recognition-dataset.csv"
         
         # Emotion mapping
@@ -80,25 +83,29 @@ class EmotionImageProcessor:
                            if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
             
             for emotion_file in emotion_files:
-                # Extract emotion from filename
-                emotion_name = self._extract_emotion_from_filename(emotion_file)
-                if emotion_name in self.emotion_map:
-                    # Load image
-                    img_path = person_path / emotion_file
-                    img = Image.open(img_path).convert('L')  # Convert to grayscale
-                    
-                    # Resize to target size to ensure consistent dimensions
-                    img = img.resize(target_size, Image.Resampling.LANCZOS)
-                    img_array = np.array(img, dtype=np.float32) / 255.0  # Normalize to [0,1]
-                    
-                    # Store image and label
-                    self.images.append(img_array)
-                    self.labels.append(self.emotion_map[emotion_name])
-                    self.metadata.append({
-                        'person_id': int(person_folder),
-                        'emotion': emotion_name,
-                        'filename': emotion_file
-                    })
+                try:
+                    # Extract emotion from filename
+                    emotion_name = self._extract_emotion_from_filename(emotion_file)
+                except ValueError as err:
+                    print(f"Warning: {err}")
+                    continue
+
+                # Load image
+                img_path = person_path / emotion_file
+                img = Image.open(img_path).convert('L')  # Convert to grayscale
+                
+                # Resize to target size to ensure consistent dimensions
+                img = img.resize(target_size, Image.Resampling.LANCZOS)
+                img_array = np.array(img, dtype=np.float32) / 255.0  # Normalize to [0,1]
+                
+                # Store image and label
+                self.images.append(img_array)
+                self.labels.append(self.emotion_map[emotion_name])
+                self.metadata.append({
+                    'person_id': int(person_folder),
+                    'emotion': emotion_name,
+                    'filename': emotion_file
+                })
         
         # Set image shape
         self.image_shape = target_size
@@ -112,11 +119,186 @@ class EmotionImageProcessor:
         
     def _extract_emotion_from_filename(self, filename):
         """Extract emotion name from filename."""
-        filename_lower = filename.lower()
-        for emotion in self.emotion_map.keys():
-            if emotion.lower() in filename_lower:
-                return emotion
-        return None
+        stem = Path(filename).stem
+
+        if stem in self.emotion_map:
+            return stem
+
+        normalized = stem.capitalize()
+        if normalized in self.emotion_map:
+            return normalized
+
+        raise ValueError(f"Unexpected emotion filename '{filename}'. "
+                         "Expected one of: "
+                         f"{', '.join(self.emotion_map.keys())}")
+
+    def _resolve_image_path(self, person_id, filename):
+        """Return absolute path to the stored image for a given metadata entry."""
+        img_path = self.images_path / str(person_id) / filename
+        if not img_path.exists():
+            img_path = self.dataset_path / str(person_id) / filename
+        return img_path
+
+    def _crop_face(self, img, target_size, x_ratio=0.18, y_ratio=0.10,
+                   width_ratio=0.64, height_ratio=0.75):
+        """
+        Crop a central face region from a square image and resize back to target size.
+        """
+        h, w = img.shape[:2]
+        crop_w = int(w * width_ratio)
+        crop_h = int(h * height_ratio)
+        x1 = int(w * x_ratio)
+        y1 = int(h * y_ratio)
+        x2 = x1 + crop_w
+        y2 = y1 + crop_h
+
+        cropped = img[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+        if cropped.size == 0:
+            return cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        return cv2.resize(cropped, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+    def preprocess(self, target_size=256, min_conf=0.85, align=True, crop=True,
+                   crop_params=None, grayscale=True, normalize=True,
+                   clahe=False, contrast_min=False, detector=None,
+                   save_dir=None):
+        """
+        Optionally run face detection and alignment followed by cropping, grayscale conversion,
+        and normalization on the entire dataset. Updates internal image arrays in-place and
+        saves the processed dataset to disk.
+        """
+        if not self.metadata:
+            raise ValueError("Dataset not loaded. Initialize EmotionImageProcessor first.")
+
+        detector = detector or MTCNN()
+        crop_params = crop_params or {
+            'x_ratio': 0.18,
+            'y_ratio': 0.10,
+            'width_ratio': 0.64,
+            'height_ratio': 0.75
+        }
+
+        save_dir = Path(save_dir) if save_dir is not None else (self.dataset_path.parent / "facial-emotion-recognition-preprossesed")
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        processed_images = []
+        processed_labels = []
+        processed_metadata = []
+        failed = []
+
+        print(f"Preprocessing images with target_size={target_size}, min_conf={min_conf}")
+
+        for meta in self.metadata:
+            img_path = self._resolve_image_path(meta['person_id'], meta['filename'])
+            if not img_path.exists():
+                failed.append({'person_id': meta['person_id'], 'filename': meta['filename'], 'reason': 'file_missing'})
+                print(f"Warning: File not found {img_path}")
+                continue
+
+            img_bgr = cv2.imread(str(img_path))
+            if img_bgr is None:
+                failed.append({'person_id': meta['person_id'], 'filename': meta['filename'], 'reason': 'read_error'})
+                print(f"Warning: Failed to read {img_path}")
+                continue
+
+            img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+            aligned_img, success, confidence = self._align_single_face(
+                img_gray, detector, target_size=target_size, min_conf=min_conf
+            )
+
+            if align:
+                if not success:
+                    failed.append({
+                        'person_id': meta['person_id'],
+                        'filename': meta['filename'],
+                        'reason': f'align_failed(conf={confidence:.2f})'
+                    })
+                    continue
+                processed = aligned_img
+            else:
+                processed = aligned_img if success else cv2.resize(
+                    img_gray, (target_size, target_size), interpolation=cv2.INTER_LINEAR
+                )
+
+            if not align and not success:
+                failed.append({
+                    'person_id': meta['person_id'],
+                    'filename': meta['filename'],
+                    'reason': f'align_failed(conf={confidence:.2f})'
+                })
+                # Continue processing using resized grayscale image despite alignment failure.
+
+            if crop:
+                processed = self._crop_face(processed, target_size=target_size, **crop_params)
+
+            if grayscale:
+                if processed.ndim == 3:
+                    processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+            else:
+                if processed.ndim == 2:
+                    processed = np.repeat(processed[..., np.newaxis], 3, axis=2)
+
+            if clahe or contrast_min:
+                img_uint8 = np.clip(processed * 255.0, 0, 255).astype(np.uint8)
+                if clahe:
+                    clahe_obj = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    img_uint8 = clahe_obj.apply(img_uint8)
+                if contrast_min:
+                    blurred = cv2.GaussianBlur(img_uint8, (99, 99), 0)
+                    blurred = np.where(blurred == 0, 1, blurred)
+                    img_uint8 = cv2.divide(img_uint8, blurred, scale=128)
+                processed = img_uint8.astype(np.float32) / 255.0 if normalize else img_uint8.astype(np.float32)
+            else:
+                processed = processed.astype(np.float32)
+                if normalize:
+                    processed = np.clip(processed, 0.0, 1.0)
+
+            processed_images.append(processed)
+            processed_labels.append(self.emotion_map[meta['emotion']])
+            processed_metadata.append(meta)
+
+            # Persist processed image to disk
+            person_dir = save_dir / str(meta['person_id'])
+            person_dir.mkdir(parents=True, exist_ok=True)
+            out_stem = Path(meta['filename']).stem
+            out_path = person_dir / f"{out_stem}.png"
+
+            to_save = processed
+            if to_save.dtype != np.uint8:
+                max_val = float(np.max(to_save)) if to_save.size else 0.0
+                if max_val <= 1.0:
+                    to_save = np.clip(to_save * 255.0, 0, 255)
+                else:
+                    to_save = np.clip(to_save, 0, 255)
+
+            if grayscale:
+                cv2.imwrite(str(out_path), to_save.astype(np.uint8))
+            else:
+                if to_save.ndim == 2:
+                    to_save = np.repeat(to_save[:, :, np.newaxis], 3, axis=2)
+                cv2.imwrite(str(out_path), to_save.astype(np.uint8))
+
+        if not processed_images:
+            raise RuntimeError("Preprocessing failed for all images.")
+
+        self.images = np.array(processed_images, dtype=np.float32)
+        self.labels = np.array(processed_labels, dtype=np.int32)
+        self.metadata = processed_metadata
+        self.image_shape = (target_size, target_size) if grayscale else (target_size, target_size, 3)
+
+        # Reset existing splits as data has changed
+        self.X_train = self.X_val = self.X_test = None
+        self.y_train = self.y_val = self.y_test = None
+
+        print(f"Preprocessing completed: {len(processed_images)} images processed, "
+              f"{len(failed)} images failed.")
+
+        return {
+            'processed_count': len(processed_images),
+            'failed_count': len(failed),
+            'failed': failed
+        }
         
     def _load_metadata(self):
         """Load metadata from CSV file."""
