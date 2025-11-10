@@ -4,27 +4,17 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import warnings
 warnings.filterwarnings('ignore')
-
-try:
-    import tensorflow as tf
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization
-    from tensorflow.keras.optimizers import Adam
-    from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-    TENSORFLOW_AVAILABLE = True
-except ImportError:
-    TENSORFLOW_AVAILABLE = False
-    print("Warning: TensorFlow not available. CNN training will be disabled.")
 
 
 class EmotionPredictor:
     """
     A comprehensive predictor class for facial emotion recognition.
-    Supports multiple machine learning models including CNN, Decision Trees,
-    Naive Bayes, Random Forest, and Support Vector Machines.
+    Supports multiple machine learning models including Neural Network (MLP), 
+    Decision Trees, Naive Bayes, Random Forest, and Support Vector Machines.
     """
     
     def __init__(self, X_train, y_train, X_val=None, y_val=None, X_test=None, y_test=None):
@@ -32,7 +22,7 @@ class EmotionPredictor:
         Initialize the predictor with training, validation, and test data.
         
         Args:
-            X_train: Training features (images or feature vectors)
+            X_train: Training features (feature vectors from LBP+PCA or raw images)
             y_train: Training labels
             X_val: Validation features (optional)
             y_val: Validation labels (optional)
@@ -80,130 +70,159 @@ class EmotionPredictor:
     
     def _prepare_data_for_traditional_ml(self, X):
         """
-        Prepare data for traditional ML algorithms (flatten images if needed).
+        Prepare data for ML algorithms (flatten images if needed, or pass through feature vectors).
         
         Args:
-            X: Input data
+            X: Input data (feature vectors or raw images)
             
         Returns:
-            np.ndarray: Flattened data ready for traditional ML
+            np.ndarray: Data ready for ML algorithms
         """
         if self.data_type == 'images':
-            # Flatten images for traditional ML
+            # Flatten images for ML
             return X.reshape(X.shape[0], -1)
         else:
-            # Already feature vectors
+            # Already feature vectors (e.g., from LBP+PCA)
             return X
     
-    def _prepare_data_for_cnn(self, X):
+    def train_neural_net(self, hidden_layer_sizes=(64, 32), alpha=1e-3, 
+                        learning_rate_init=1e-3, max_iter=500, early_stopping=True,
+                        validation_fraction=0.2, batch_size='auto', patience=10,
+                        n_iter_per_check=20, min_improvement=0.0001):
         """
-        Prepare data for CNN (reshape if needed).
+        Train a Neural Network (MLP) classifier for emotion recognition.
         
         Args:
-            X: Input data
+            hidden_layer_sizes (tuple): Sizes of hidden layers (default: (64, 32))
+            alpha (float): L2 regularization parameter (default: 1e-3)
+            learning_rate_init (float): Initial learning rate (default: 1e-3)
+            max_iter (int): Maximum number of iterations (default: 500)
+            early_stopping (bool): Whether to use early stopping (default: True)
+            validation_fraction (float): Fraction of training data for validation if X_val not provided (default: 0.2)
+            batch_size (str or int): Size of minibatches (default: 'auto')
+            patience (int): Number of checks without improvement before stopping (default: 10)
+            n_iter_per_check (int): Number of iterations between validation checks (default: 20)
+            min_improvement (float): Minimum improvement in validation accuracy to reset patience (default: 0.0001)
             
         Returns:
-            np.ndarray: Data ready for CNN
+            dict or MLPClassifier: If using manual early stopping with X_val, returns dict with model and history.
+                                   Otherwise returns trained model directly.
         """
-        if self.data_type == 'images':
-            # Ensure images have the right shape for CNN
-            if len(X.shape) == 3:  # Grayscale images
-                return X.reshape(X.shape[0], X.shape[1], X.shape[2], 1)
-            else:
-                return X
-        else:
-            raise ValueError("CNN requires image data, not feature vectors")
-    
-    def train_cnn(self, epochs=50, batch_size=32, learning_rate=0.001):
-        """
-        Train a CNN model for emotion recognition.
+        print("Training Neural Network (MLP)...")
         
-        Args:
-            epochs (int): Number of training epochs
-            batch_size (int): Batch size for training
-            learning_rate (float): Learning rate for optimizer
+        # Prepare data
+        X_train_ml = self._prepare_data_for_traditional_ml(self.X_train)
+        
+        # Use manual early stopping if validation set is provided and early_stopping is enabled
+        if self.X_val is not None and early_stopping:
+            print("Using provided validation set for early stopping...")
+            X_val_ml = self._prepare_data_for_traditional_ml(self.X_val)
             
-        Returns:
-            dict: Training history
-        """
-        if not TENSORFLOW_AVAILABLE:
-            raise ImportError("TensorFlow is required for CNN training. Please install tensorflow.")
-        
-        if self.data_type != 'images':
-            raise ValueError("CNN training requires image data, not feature vectors")
-        
-        print("Training CNN model...")
-        
-        # Prepare data for CNN
-        X_train_cnn = self._prepare_data_for_cnn(self.X_train)
-        X_val_cnn = self._prepare_data_for_cnn(self.X_val) if self.X_val is not None else None
-        
-        # Get image dimensions
-        img_height, img_width = X_train_cnn.shape[1], X_train_cnn.shape[2]
-        
-        # Build CNN model
-        model = Sequential([
-            Conv2D(32, (3, 3), activation='relu', input_shape=(img_height, img_width, 1)),
-            BatchNormalization(),
-            MaxPooling2D(2, 2),
-            
-            Conv2D(64, (3, 3), activation='relu'),
-            BatchNormalization(),
-            MaxPooling2D(2, 2),
-            
-            Conv2D(128, (3, 3), activation='relu'),
-            BatchNormalization(),
-            MaxPooling2D(2, 2),
-            
-            Conv2D(256, (3, 3), activation='relu'),
-            BatchNormalization(),
-            MaxPooling2D(2, 2),
-            
-            Flatten(),
-            Dense(512, activation='relu'),
-            Dropout(0.5),
-            Dense(256, activation='relu'),
-            Dropout(0.3),
-            Dense(8, activation='softmax')  # 8 emotion classes
-        ])
-        
-        # Compile model
-        model.compile(
-            optimizer=Adam(learning_rate=learning_rate),
-            loss='sparse_categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        
-        # Callbacks
-        callbacks = [
-            EarlyStopping(patience=10, restore_best_weights=True),
-            ReduceLROnPlateau(factor=0.5, patience=5)
-        ]
-        
-        # Train model
-        if X_val_cnn is not None:
-            history = model.fit(
-                X_train_cnn, self.y_train,
-                validation_data=(X_val_cnn, self.y_val),
-                epochs=epochs,
+            # Initialize model with warm_start for iterative training
+            model = MLPClassifier(
+                hidden_layer_sizes=hidden_layer_sizes,
+                activation='relu',
+                solver='adam',
+                alpha=alpha,
+                learning_rate_init=learning_rate_init,
+                max_iter=n_iter_per_check,
+                warm_start=True,
                 batch_size=batch_size,
-                callbacks=callbacks,
-                verbose=1
+                random_state=42,
+                verbose=False
             )
+            
+            # Training loop with manual early stopping
+            best_val_acc = 0.0
+            best_model_state = None
+            patience_counter = 0
+            total_iterations = 0
+            val_acc_history = []
+            train_acc_history = []
+            
+            max_checks = max_iter // n_iter_per_check
+            
+            for check in range(max_checks):
+                # Train for n_iter_per_check iterations
+                model.fit(X_train_ml, self.y_train)
+                total_iterations += n_iter_per_check
+                
+                # Evaluate on validation set
+                y_val_pred = model.predict(X_val_ml)
+                val_acc = accuracy_score(self.y_val, y_val_pred)
+                val_acc_history.append(val_acc)
+                
+                # Track training accuracy
+                y_train_pred = model.predict(X_train_ml)
+                train_acc = accuracy_score(self.y_train, y_train_pred)
+                train_acc_history.append(train_acc)
+                
+                print(f"Check {check+1}/{max_checks} (iter {total_iterations}): "
+                      f"Train Acc = {train_acc:.4f}, Val Acc = {val_acc:.4f}")
+                
+                # Check if validation accuracy improved
+                if val_acc > best_val_acc + min_improvement:
+                    best_val_acc = val_acc
+                    # Deep copy model state
+                    import copy
+                    best_model_state = copy.deepcopy(model)
+                    patience_counter = 0
+                    print(f"  → New best validation accuracy: {best_val_acc:.4f}")
+                else:
+                    patience_counter += 1
+                    print(f"  → No improvement (patience: {patience_counter}/{patience})")
+                
+                # Early stopping check
+                if patience_counter >= patience:
+                    print(f"Early stopping triggered after {total_iterations} iterations")
+                    break
+            
+            # Restore best model
+            if best_model_state is not None:
+                model = best_model_state
+                print(f"Restored best model with validation accuracy: {best_val_acc:.4f}")
+            
+            # Store model
+            self.models['neural_net'] = model
+            
+            print("Neural Network training completed")
+            
+            # Return model with training history
+            return {
+                'model': model,
+                'val_acc_history': val_acc_history,
+                'train_acc_history': train_acc_history,
+                'total_iterations': total_iterations,
+                'best_val_acc': best_val_acc,
+                'early_stopped': patience_counter >= patience
+            }
+        
         else:
-            history = model.fit(
-                X_train_cnn, self.y_train,
-                epochs=epochs,
+            # Fall back to standard training (original behavior)
+            if self.X_val is None and early_stopping:
+                print(f"Using internal validation_fraction={validation_fraction} for early stopping...")
+            
+            model = MLPClassifier(
+                hidden_layer_sizes=hidden_layer_sizes,
+                activation='relu',
+                solver='adam',
+                alpha=alpha,
+                learning_rate_init=learning_rate_init,
+                max_iter=max_iter,
+                early_stopping=early_stopping,
+                validation_fraction=validation_fraction,
                 batch_size=batch_size,
-                callbacks=callbacks,
-                verbose=1
+                random_state=42,
+                verbose=False
             )
-        
-        # Store model
-        self.models['cnn'] = model
-        
-        print("CNN training completed")
-        return history.history
+            
+            model.fit(X_train_ml, self.y_train)
+            
+            # Store model
+            self.models['neural_net'] = model
+            
+            print("Neural Network training completed")
+            return model
     
     def train_decision_tree(self, max_depth=None, min_samples_split=2, min_samples_leaf=1):
         """
@@ -333,14 +352,14 @@ class EmotionPredictor:
         Unified training interface that calls the appropriate training method.
         
         Args:
-            model_type (str): Type of model to train ('cnn', 'decision_tree', 'naive_bayes', 'random_forest', 'svm')
+            model_type (str): Type of model to train ('neural_net', 'decision_tree', 'naive_bayes', 'random_forest', 'svm')
             **kwargs: Additional arguments for the specific training method
             
         Returns:
             Trained model or training history
         """
-        if model_type == 'cnn':
-            return self.train_cnn(**kwargs)
+        if model_type == 'neural_net':
+            return self.train_neural_net(**kwargs)
         elif model_type == 'decision_tree':
             return self.train_decision_tree(**kwargs)
         elif model_type == 'naive_bayes':
@@ -350,7 +369,7 @@ class EmotionPredictor:
         elif model_type == 'svm':
             return self.train_svm(**kwargs)
         else:
-            raise ValueError(f"Unknown model type: {model_type}. Choose from: cnn, decision_tree, naive_bayes, random_forest, svm")
+            raise ValueError(f"Unknown model type: {model_type}. Choose from: neural_net, decision_tree, naive_bayes, random_forest, svm")
     
     def predict(self, model_type, X):
         """
@@ -367,14 +386,8 @@ class EmotionPredictor:
             raise ValueError(f"Model '{model_type}' not found. Train the model first.")
         
         model = self.models[model_type]
-        
-        if model_type == 'cnn':
-            X_pred = self._prepare_data_for_cnn(X)
-            predictions = model.predict(X_pred)
-            return np.argmax(predictions, axis=1)
-        else:
-            X_pred = self._prepare_data_for_traditional_ml(X)
-            return model.predict(X_pred)
+        X_pred = self._prepare_data_for_traditional_ml(X)
+        return model.predict(X_pred)
     
     def evaluate(self, model_type, dataset='test'):
         """

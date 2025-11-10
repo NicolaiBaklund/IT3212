@@ -27,18 +27,28 @@ class EmotionImageProcessor:
     """
     A comprehensive processing class for facial emotion recognition dataset.
     Loads images, performs train-test splits, and provides feature extraction methods.
+    
     """
     
-    def __init__(self, dataset_path):
+    def __init__(self, dataset_path, train_subjects=None, val_subjects=None, test_subjects=None):
         """
         Initialize the processor by loading images and metadata.
         
         Args:
             dataset_path (str): Path to the facial-emotion-recognition dataset folder
+            train_subjects (int, optional): Number of distinct persons to place in the training split.
+            val_subjects (int, optional): Number of distinct persons to place in the validation split.
+            test_subjects (int, optional): Number of distinct persons to place in the test split.
         """
         self.dataset_path = Path(dataset_path)
         self.images_path = self.dataset_path / "images"
+        if not self.images_path.exists():
+            self.images_path = self.dataset_path
         self.csv_path = self.dataset_path / "facial-emotion-recognition-dataset.csv"
+
+        self.default_train_subjects = train_subjects
+        self.default_val_subjects = val_subjects
+        self.default_test_subjects = test_subjects
         
         # Emotion mapping
         self.emotion_map = {
@@ -80,25 +90,29 @@ class EmotionImageProcessor:
                            if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
             
             for emotion_file in emotion_files:
-                # Extract emotion from filename
-                emotion_name = self._extract_emotion_from_filename(emotion_file)
-                if emotion_name in self.emotion_map:
-                    # Load image
-                    img_path = person_path / emotion_file
-                    img = Image.open(img_path).convert('L')  # Convert to grayscale
-                    
-                    # Resize to target size to ensure consistent dimensions
-                    img = img.resize(target_size, Image.Resampling.LANCZOS)
-                    img_array = np.array(img, dtype=np.float32) / 255.0  # Normalize to [0,1]
-                    
-                    # Store image and label
-                    self.images.append(img_array)
-                    self.labels.append(self.emotion_map[emotion_name])
-                    self.metadata.append({
-                        'person_id': int(person_folder),
-                        'emotion': emotion_name,
-                        'filename': emotion_file
-                    })
+                try:
+                    # Extract emotion from filename
+                    emotion_name = self._extract_emotion_from_filename(emotion_file)
+                except ValueError as err:
+                    print(f"Warning: {err}")
+                    continue
+
+                # Load image
+                img_path = person_path / emotion_file
+                img = Image.open(img_path).convert('L')  # Convert to grayscale
+                
+                # Resize to target size to ensure consistent dimensions
+                img = img.resize(target_size, Image.Resampling.LANCZOS)
+                img_array = np.array(img, dtype=np.float32) / 255.0  # Normalize to [0,1]
+                
+                # Store image and label
+                self.images.append(img_array)
+                self.labels.append(self.emotion_map[emotion_name])
+                self.metadata.append({
+                    'person_id': int(person_folder),
+                    'emotion': emotion_name,
+                    'filename': emotion_file
+                })
         
         # Set image shape
         self.image_shape = target_size
@@ -112,11 +126,186 @@ class EmotionImageProcessor:
         
     def _extract_emotion_from_filename(self, filename):
         """Extract emotion name from filename."""
-        filename_lower = filename.lower()
-        for emotion in self.emotion_map.keys():
-            if emotion.lower() in filename_lower:
-                return emotion
-        return None
+        stem = Path(filename).stem
+
+        if stem in self.emotion_map:
+            return stem
+
+        normalized = stem.capitalize()
+        if normalized in self.emotion_map:
+            return normalized
+
+        raise ValueError(f"Unexpected emotion filename '{filename}'. "
+                         "Expected one of: "
+                         f"{', '.join(self.emotion_map.keys())}")
+
+    def _resolve_image_path(self, person_id, filename):
+        """Return absolute path to the stored image for a given metadata entry."""
+        img_path = self.images_path / str(person_id) / filename
+        if not img_path.exists():
+            img_path = self.dataset_path / str(person_id) / filename
+        return img_path
+
+    def _crop_face(self, img, target_size, x_ratio=0.18, y_ratio=0.10,
+                   width_ratio=0.64, height_ratio=0.75):
+        """
+        Crop a central face region from a square image and resize back to target size.
+        """
+        h, w = img.shape[:2]
+        crop_w = int(w * width_ratio)
+        crop_h = int(h * height_ratio)
+        x1 = int(w * x_ratio)
+        y1 = int(h * y_ratio)
+        x2 = x1 + crop_w
+        y2 = y1 + crop_h
+
+        cropped = img[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+        if cropped.size == 0:
+            return cv2.resize(img, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+        return cv2.resize(cropped, (target_size, target_size), interpolation=cv2.INTER_LINEAR)
+
+    def preprocess(self, target_size=256, min_conf=0.85, align=True, crop=True,
+                   crop_params=None, grayscale=True, normalize=True,
+                   clahe=False, contrast_min=False, detector=None,
+                   save_dir=None):
+        """
+        Optionally run face detection and alignment followed by cropping, grayscale conversion,
+        and normalization on the entire dataset. Updates internal image arrays in-place and
+        saves the processed dataset to disk.
+        """
+        if not self.metadata:
+            raise ValueError("Dataset not loaded. Initialize EmotionImageProcessor first.")
+
+        detector = detector or MTCNN()
+        crop_params = crop_params or {
+            'x_ratio': 0.18,
+            'y_ratio': 0.10,
+            'width_ratio': 0.64,
+            'height_ratio': 0.75
+        }
+
+        save_dir = Path(save_dir) if save_dir is not None else (self.dataset_path.parent / "facial-emotion-recognition-preprossesed")
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        processed_images = []
+        processed_labels = []
+        processed_metadata = []
+        failed = []
+
+        print(f"Preprocessing images with target_size={target_size}, min_conf={min_conf}")
+
+        for meta in self.metadata:
+            img_path = self._resolve_image_path(meta['person_id'], meta['filename'])
+            if not img_path.exists():
+                failed.append({'person_id': meta['person_id'], 'filename': meta['filename'], 'reason': 'file_missing'})
+                print(f"Warning: File not found {img_path}")
+                continue
+
+            img_bgr = cv2.imread(str(img_path))
+            if img_bgr is None:
+                failed.append({'person_id': meta['person_id'], 'filename': meta['filename'], 'reason': 'read_error'})
+                print(f"Warning: Failed to read {img_path}")
+                continue
+
+            img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+
+            aligned_img, success, confidence = self._align_single_face(
+                img_gray, detector, target_size=target_size, min_conf=min_conf
+            )
+
+            if align:
+                if not success:
+                    failed.append({
+                        'person_id': meta['person_id'],
+                        'filename': meta['filename'],
+                        'reason': f'align_failed(conf={confidence:.2f})'
+                    })
+                    continue
+                processed = aligned_img
+            else:
+                processed = aligned_img if success else cv2.resize(
+                    img_gray, (target_size, target_size), interpolation=cv2.INTER_LINEAR
+                )
+
+            if not align and not success:
+                failed.append({
+                    'person_id': meta['person_id'],
+                    'filename': meta['filename'],
+                    'reason': f'align_failed(conf={confidence:.2f})'
+                })
+                # Continue processing using resized grayscale image despite alignment failure.
+
+            if crop:
+                processed = self._crop_face(processed, target_size=target_size, **crop_params)
+
+            if grayscale:
+                if processed.ndim == 3:
+                    processed = cv2.cvtColor(processed, cv2.COLOR_BGR2GRAY)
+            else:
+                if processed.ndim == 2:
+                    processed = np.repeat(processed[..., np.newaxis], 3, axis=2)
+
+            if clahe or contrast_min:
+                img_uint8 = np.clip(processed * 255.0, 0, 255).astype(np.uint8)
+                if clahe:
+                    clahe_obj = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                    img_uint8 = clahe_obj.apply(img_uint8)
+                if contrast_min:
+                    blurred = cv2.GaussianBlur(img_uint8, (99, 99), 0)
+                    blurred = np.where(blurred == 0, 1, blurred)
+                    img_uint8 = cv2.divide(img_uint8, blurred, scale=128)
+                processed = img_uint8.astype(np.float32) / 255.0 if normalize else img_uint8.astype(np.float32)
+            else:
+                processed = processed.astype(np.float32)
+                if normalize:
+                    processed = np.clip(processed, 0.0, 1.0)
+
+            processed_images.append(processed)
+            processed_labels.append(self.emotion_map[meta['emotion']])
+            processed_metadata.append(meta)
+
+            # Persist processed image to disk
+            person_dir = save_dir / str(meta['person_id'])
+            person_dir.mkdir(parents=True, exist_ok=True)
+            out_stem = Path(meta['filename']).stem
+            out_path = person_dir / f"{out_stem}.png"
+
+            to_save = processed
+            if to_save.dtype != np.uint8:
+                max_val = float(np.max(to_save)) if to_save.size else 0.0
+                if max_val <= 1.0:
+                    to_save = np.clip(to_save * 255.0, 0, 255)
+                else:
+                    to_save = np.clip(to_save, 0, 255)
+
+            if grayscale:
+                cv2.imwrite(str(out_path), to_save.astype(np.uint8))
+            else:
+                if to_save.ndim == 2:
+                    to_save = np.repeat(to_save[:, :, np.newaxis], 3, axis=2)
+                cv2.imwrite(str(out_path), to_save.astype(np.uint8))
+
+        if not processed_images:
+            raise RuntimeError("Preprocessing failed for all images.")
+
+        self.images = np.array(processed_images, dtype=np.float32)
+        self.labels = np.array(processed_labels, dtype=np.int32)
+        self.metadata = processed_metadata
+        self.image_shape = (target_size, target_size) if grayscale else (target_size, target_size, 3)
+
+        # Reset existing splits as data has changed
+        self.X_train = self.X_val = self.X_test = None
+        self.y_train = self.y_val = self.y_test = None
+
+        print(f"Preprocessing completed: {len(processed_images)} images processed, "
+              f"{len(failed)} images failed.")
+
+        return {
+            'processed_count': len(processed_images),
+            'failed_count': len(failed),
+            'failed': failed
+        }
         
     def _load_metadata(self):
         """Load metadata from CSV file."""
@@ -205,32 +394,139 @@ class EmotionImageProcessor:
         
         return aligned, True, face['confidence']
     
-    def train_val_test_split(self, val_size=0.2, test_size=0.2, random_state=42):
+    def _compute_split_counts(self, n_persons, train_subjects, val_subjects, test_subjects, val_size, test_size):
+        use_explicit_counts = any(
+            value is not None for value in (train_subjects, val_subjects, test_subjects)
+        )
+
+        if use_explicit_counts:
+            if val_subjects is None or test_subjects is None:
+                raise ValueError(
+                    "Explicit subject splits require both val_subjects and test_subjects."
+                )
+
+            val_count = int(val_subjects)
+            test_count = int(test_subjects)
+            if val_count < 0 or test_count < 0:
+                raise ValueError("Split sizes must be non-negative integers.")
+
+            if train_subjects is None:
+                train_count = n_persons - val_count - test_count
+            else:
+                train_count = int(train_subjects)
+
+            if train_count < 0:
+                raise ValueError("Requested split sizes exceed number of available persons.")
+
+            total_requested = train_count + val_count + test_count
+            if total_requested > n_persons:
+                raise ValueError(
+                    f"Requested {total_requested} persons but only {n_persons} are available."
+                )
+
+            # Add any remaining persons to the training split by default.
+            if total_requested < n_persons:
+                train_count += n_persons - total_requested
+
+            return train_count, val_count, test_count
+
+        if not 0 <= val_size < 1 or not 0 <= test_size < 1 or val_size + test_size >= 1:
+            raise ValueError(
+                "val_size and test_size must be fractions in [0, 1) whose sum is less than 1."
+            )
+
+        val_count = int(round(n_persons * val_size))
+        test_count = int(round(n_persons * test_size))
+
+        # Ensure we do not exhaust all persons with val/test rounding.
+        if val_count + test_count >= n_persons:
+            # Reserve at least one person for training if possible.
+            overflow = (val_count + test_count) - (n_persons - 1)
+            if overflow > 0:
+                # Reduce the larger of the two counts first.
+                if val_count >= test_count:
+                    val_count = max(0, val_count - overflow)
+                else:
+                    test_count = max(0, test_count - overflow)
+
+        train_count = n_persons - val_count - test_count
+
+        return train_count, val_count, test_count
+
+    def train_val_test_split(
+        self,
+        train_subjects=None,
+        val_subjects=None,
+        test_subjects=None,
+        val_size=0.2,
+        test_size=0.2,
+        random_state=42,
+        data=None,
+        labels=None,
+    ):
         """
         Split data into train, validation, and test sets by person (not by individual images).
         This ensures all emotions of one person stay together in either train, validation, or test.
         
         Args:
-            val_size (float): Proportion of persons to use for validation
-            test_size (float): Proportion of persons to use for testing
+            train_subjects (int, optional): Number of persons to include in training split.
+            val_subjects (int, optional): Number of persons to include in validation split.
+            test_subjects (int, optional): Number of persons to include in test split.
+            val_size (float): Proportion of persons to use for validation when explicit counts are not provided.
+            test_size (float): Proportion of persons to use for testing when explicit counts are not provided.
             random_state (int): Random seed for reproducibility
+            data (np.ndarray, optional): Feature matrix aligned with internal metadata order.
+            labels (np.ndarray, optional): Labels aligned with internal metadata order.
+
+        Returns:
+            tuple: (X_train, X_val, X_test, y_train, y_val, y_test)
         """
+        if self.metadata is None or not self.metadata:
+            raise ValueError("No metadata available to perform a train/validation/test split.")
+
+        feature_source = np.asarray(data if data is not None else self.images)
+        label_source = np.asarray(labels if labels is not None else self.labels)
+
+        if feature_source.shape[0] != len(self.metadata):
+            raise ValueError(
+                "Feature array length does not match metadata length. Ensure data is aligned."
+            )
+
+        if label_source.shape[0] != len(self.metadata):
+            raise ValueError(
+                "Label array length does not match metadata length. Ensure labels are aligned."
+            )
+
+        train_subjects = (
+            train_subjects if train_subjects is not None else self.default_train_subjects
+        )
+        val_subjects = (
+            val_subjects if val_subjects is not None else self.default_val_subjects
+        )
+        test_subjects = (
+            test_subjects if test_subjects is not None else self.default_test_subjects
+        )
+
         # Get unique person IDs
-        person_ids = list(set([meta['person_id'] for meta in self.metadata]))
+        person_ids = sorted({meta['person_id'] for meta in self.metadata})
         
         # Set random seed
-        random.seed(random_state)
-        random.shuffle(person_ids)
-        
-        # Calculate split indices
+        rng = random.Random(random_state)
+        rng.shuffle(person_ids)
+
         n_persons = len(person_ids)
-        val_split_idx = int(n_persons * (1 - val_size - test_size))
-        test_split_idx = int(n_persons * (1 - test_size))
-        
-        # Split persons
-        train_persons = person_ids[:val_split_idx]
-        val_persons = person_ids[val_split_idx:test_split_idx]
-        test_persons = person_ids[test_split_idx:]
+        train_count, val_count, test_count = self._compute_split_counts(
+            n_persons,
+            train_subjects,
+            val_subjects,
+            test_subjects,
+            val_size,
+            test_size,
+        )
+
+        train_persons = person_ids[:train_count]
+        val_persons = person_ids[train_count:train_count + val_count]
+        test_persons = person_ids[train_count + val_count:train_count + val_count + test_count]
         
         # Create masks for train/val/test
         train_mask = np.array([meta['person_id'] in train_persons for meta in self.metadata])
@@ -238,19 +534,107 @@ class EmotionImageProcessor:
         test_mask = np.array([meta['person_id'] in test_persons for meta in self.metadata])
         
         # Split data
-        self.X_train = self.images[train_mask]
-        self.y_train = self.labels[train_mask]
-        self.X_val = self.images[val_mask]
-        self.y_val = self.labels[val_mask]
-        self.X_test = self.images[test_mask]
-        self.y_test = self.labels[test_mask]
+        self.X_train = feature_source[train_mask]
+        self.y_train = label_source[train_mask]
+        self.X_val = feature_source[val_mask]
+        self.y_val = label_source[val_mask]
+        self.X_test = feature_source[test_mask]
+        self.y_test = label_source[test_mask]
+
+        if self.X_train.size:
+            self.image_shape = self.X_train.shape[1:]
         
         print(f"Train set: {len(self.X_train)} images from {len(train_persons)} persons")
         print(f"Validation set: {len(self.X_val)} images from {len(val_persons)} persons")
         print(f"Test set: {len(self.X_test)} images from {len(test_persons)} persons")
-        print(f"Train emotion distribution: {np.bincount(self.y_train)}")
-        print(f"Validation emotion distribution: {np.bincount(self.y_val)}")
-        print(f"Test emotion distribution: {np.bincount(self.y_test)}")
+        print(
+            f"Train emotion distribution: {np.bincount(self.y_train) if len(self.y_train) else '[]'}"
+        )
+        print(
+            f"Validation emotion distribution: {np.bincount(self.y_val) if len(self.y_val) else '[]'}"
+        )
+        print(
+            f"Test emotion distribution: {np.bincount(self.y_test) if len(self.y_test) else '[]'}"
+        )
+
+        return self.X_train, self.X_val, self.X_test, self.y_train, self.y_val, self.y_test
+    def _compute_lbp_matrix(self, images, n_points=24, radius=3, method='uniform', flatten=True):
+        """
+        Compute Local Binary Pattern representations for a collection of images.
+
+        Args:
+            images (Iterable[np.ndarray]): Images to transform.
+            n_points (int): Number of circularly symmetric neighbor points.
+            radius (int): Radius of circle.
+            method (str): LBP method.
+            flatten (bool): Whether to flatten each LBP image to a 1D vector.
+
+        Returns:
+            np.ndarray: Matrix of LBP representations.
+        """
+        lbp_features = []
+
+        for img in images:
+            if img.ndim == 3 and img.shape[-1] == 3:
+                img_gray = cv2.cvtColor(
+                    (img * 255).astype(np.uint8) if img.max() <= 1.0 else img.astype(np.uint8),
+                    cv2.COLOR_BGR2GRAY,
+                )
+            else:
+                if img.max() <= 1.0:
+                    img_gray = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+                else:
+                    img_gray = np.clip(img, 0, 255).astype(np.uint8)
+
+            lbp = local_binary_pattern(img_gray, n_points, radius, method=method).astype(np.float32)
+            lbp_features.append(lbp.ravel() if flatten else lbp)
+
+        if not lbp_features:
+            raise ValueError("No images available for LBP computation.")
+
+        return np.stack(lbp_features)
+
+    def preprocess_and_split_with_lbp(
+        self,
+        train_subjects,
+        val_subjects,
+        test_subjects,
+        preprocess_kwargs=None,
+        lbp_kwargs=None,
+        random_state=42,
+    ):
+        """
+        Run preprocessing followed by LBP feature extraction and perform a subject-level split.
+
+        Args:
+            train_subjects (int): Number of persons for the training split.
+            val_subjects (int): Number of persons for the validation split.
+            test_subjects (int): Number of persons for the test split.
+            preprocess_kwargs (dict, optional): Keyword arguments forwarded to preprocess().
+            lbp_kwargs (dict, optional): Keyword arguments forwarded to the LBP extraction.
+            random_state (int): Deterministic seed for the subject shuffle.
+
+        Returns:
+            tuple: (X_train, X_val, X_test, y_train, y_val, y_test)
+        """
+        preprocess_kwargs = preprocess_kwargs or {}
+        lbp_kwargs = lbp_kwargs or {}
+
+        # Step 1: preprocess raw images.
+        self.preprocess(**preprocess_kwargs)
+
+        # Step 2: compute LBP representations and flatten them.
+        lbp_matrix = self._compute_lbp_matrix(self.images, **lbp_kwargs)
+
+        # Step 3: perform subject-level split on the transformed data.
+        return self.train_val_test_split(
+            train_subjects=train_subjects,
+            val_subjects=val_subjects,
+            test_subjects=test_subjects,
+            random_state=random_state,
+            data=lbp_matrix,
+            labels=self.labels,
+        )
     
     def apply_alignment(self, target_size=256, min_conf=0.85, border_mode=cv2.BORDER_REFLECT):
         """
@@ -407,143 +791,6 @@ class EmotionImageProcessor:
         
         return stats
     
-    def apply_log(self, sigma=1.0, ksize=5):
-        """
-        Apply Laplacian of Gaussian (LoG) filter to train and test images.
-        Updates the internal image arrays with filtered versions.
-        
-        Args:
-            sigma (float): Standard deviation for Gaussian kernel
-            ksize (int): Kernel size for Gaussian blur
-        """
-        if self.X_train is None or self.X_val is None or self.X_test is None:
-            raise ValueError("Must call train_val_test_split() first")
-        
-        print(f"Applying LoG filter with sigma={sigma}, ksize={ksize}")
-        
-        # Apply LoG to training images
-        filtered_train = []
-        for img in self.X_train:
-            # Convert to uint8 for OpenCV
-            img_uint8 = (img * 255).astype(np.uint8)
-            
-            # Apply Gaussian blur
-            blurred = cv2.GaussianBlur(img_uint8, (ksize, ksize), sigma)
-            
-            # Apply Laplacian
-            log_filtered = cv2.Laplacian(blurred, cv2.CV_64F)
-            
-            # Convert back to float32 and normalize
-            log_filtered = np.abs(log_filtered).astype(np.float32) / 255.0
-            filtered_train.append(log_filtered)
-        
-        # Apply LoG to validation images
-        filtered_val = []
-        for img in self.X_val:
-            # Convert to uint8 for OpenCV
-            img_uint8 = (img * 255).astype(np.uint8)
-            
-            # Apply Gaussian blur
-            blurred = cv2.GaussianBlur(img_uint8, (ksize, ksize), sigma)
-            
-            # Apply Laplacian
-            log_filtered = cv2.Laplacian(blurred, cv2.CV_64F)
-            
-            # Convert back to float32 and normalize
-            log_filtered = np.abs(log_filtered).astype(np.float32) / 255.0
-            filtered_val.append(log_filtered)
-        
-        # Apply LoG to test images
-        filtered_test = []
-        for img in self.X_test:
-            # Convert to uint8 for OpenCV
-            img_uint8 = (img * 255).astype(np.uint8)
-            
-            # Apply Gaussian blur
-            blurred = cv2.GaussianBlur(img_uint8, (ksize, ksize), sigma)
-            
-            # Apply Laplacian
-            log_filtered = cv2.Laplacian(blurred, cv2.CV_64F)
-            
-            # Convert back to float32 and normalize
-            log_filtered = np.abs(log_filtered).astype(np.float32) / 255.0
-            filtered_test.append(log_filtered)
-        
-        # Update internal arrays
-        self.X_train = np.array(filtered_train)
-        self.X_val = np.array(filtered_val)
-        self.X_test = np.array(filtered_test)
-        
-        print("LoG filtering completed")
-    
-    def apply_hog(self, orientations=9, pixels_per_cell=(8, 8), cells_per_block=(2, 2)):
-        """
-        Extract Histogram of Oriented Gradients (HoG) features from current images.
-        
-        Args:
-            orientations (int): Number of orientation bins
-            pixels_per_cell (tuple): Size of a cell in pixels
-            cells_per_block (tuple): Number of cells in each block
-            
-        Returns:
-            tuple: (hog_train_features, hog_val_features, hog_test_features)
-        """
-        if self.X_train is None or self.X_val is None or self.X_test is None:
-            raise ValueError("Must call train_val_test_split() first")
-        
-        print(f"Extracting HoG features with orientations={orientations}, "
-              f"pixels_per_cell={pixels_per_cell}, cells_per_block={cells_per_block}")
-        
-        # Extract HoG features from training images
-        hog_train_features = []
-        for img in self.X_train:
-            # Convert to uint8 for HoG
-            img_uint8 = (img * 255).astype(np.uint8)
-            
-            # Extract HoG features
-            hog_features = hog(img_uint8, 
-                              orientations=orientations,
-                              pixels_per_cell=pixels_per_cell,
-                              cells_per_block=cells_per_block,
-                              feature_vector=True)
-            hog_train_features.append(hog_features)
-        
-        # Extract HoG features from validation images
-        hog_val_features = []
-        for img in self.X_val:
-            # Convert to uint8 for HoG
-            img_uint8 = (img * 255).astype(np.uint8)
-            
-            # Extract HoG features
-            hog_features = hog(img_uint8,
-                              orientations=orientations,
-                              pixels_per_cell=pixels_per_cell,
-                              cells_per_block=cells_per_block,
-                              feature_vector=True)
-            hog_val_features.append(hog_features)
-        
-        # Extract HoG features from test images
-        hog_test_features = []
-        for img in self.X_test:
-            # Convert to uint8 for HoG
-            img_uint8 = (img * 255).astype(np.uint8)
-            
-            # Extract HoG features
-            hog_features = hog(img_uint8,
-                              orientations=orientations,
-                              pixels_per_cell=pixels_per_cell,
-                              cells_per_block=cells_per_block,
-                              feature_vector=True)
-            hog_test_features.append(hog_features)
-        
-        hog_train_features = np.array(hog_train_features)
-        hog_val_features = np.array(hog_val_features)
-        hog_test_features = np.array(hog_test_features)
-        
-        print(f"HoG features extracted: train shape {hog_train_features.shape}, "
-              f"val shape {hog_val_features.shape}, test shape {hog_test_features.shape}")
-        
-        return hog_train_features, hog_val_features, hog_test_features
     
     def apply_lbp(self, n_points=24, radius=3, method='uniform', n_bins=256):
         """
@@ -625,202 +872,7 @@ class EmotionImageProcessor:
               f"val shape {lbp_val_features.shape}, test shape {lbp_test_features.shape}")
         
         return lbp_train_features, lbp_val_features, lbp_test_features
-    
-    def apply_cnn_features(self, model_name='resnet50', layer='avg_pool', input_size=(224, 224)):
-        """
-        Extract deep learning features using pre-trained CNN models.
-        
-        Args:
-            model_name (str): Name of pre-trained model ('resnet50', 'vgg16', 'mobilenet_v2')
-            layer (str): Layer name to extract features from
-            input_size (tuple): Input image size for the model
-            
-        Returns:
-            tuple: (cnn_train_features, cnn_val_features, cnn_test_features)
-        """
-        if not TENSORFLOW_AVAILABLE:
-            raise ImportError("TensorFlow is required for CNN feature extraction. Please install tensorflow.")
-        
-        if self.X_train is None or self.X_val is None or self.X_test is None:
-            raise ValueError("Must call train_val_test_split() first")
-        
-        print(f"Extracting CNN features using {model_name} from layer {layer}")
-        
-        # Load pre-trained model
-        if model_name.lower() == 'resnet50':
-            model = ResNet50(weights='imagenet', include_top=False, input_shape=(*input_size, 3))
-            preprocess_func = resnet_preprocess
-        elif model_name.lower() == 'vgg16':
-            model = VGG16(weights='imagenet', include_top=False, input_shape=(*input_size, 3))
-            preprocess_func = vgg_preprocess
-        elif model_name.lower() == 'mobilenet_v2':
-            model = MobileNetV2(weights='imagenet', include_top=False, input_shape=(*input_size, 3))
-            preprocess_func = mobilenet_preprocess
-        else:
-            raise ValueError(f"Unsupported model: {model_name}. Choose from 'resnet50', 'vgg16', 'mobilenet_v2'")
-        
-        # Create feature extraction model
-        feature_extractor = tf.keras.Model(inputs=model.input, outputs=model.get_layer(layer).output)
-        
-        def extract_features_from_images(images):
-            """Extract features from a batch of images."""
-            # Convert grayscale to RGB
-            rgb_images = []
-            for img in images:
-                # Resize to model input size
-                img_resized = cv2.resize(img, input_size)
-                # Convert grayscale to RGB
-                img_rgb = cv2.cvtColor((img_resized * 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
-                rgb_images.append(img_rgb)
-            
-            rgb_images = np.array(rgb_images)
-            
-            # Preprocess for the specific model
-            rgb_images = preprocess_func(rgb_images)
-            
-            # Extract features
-            features = feature_extractor.predict(rgb_images, verbose=0)
-            
-            # Flatten features
-            features_flat = features.reshape(features.shape[0], -1)
-            
-            return features_flat
-        
-        # Extract features from training images
-        print("Extracting features from training images...")
-        cnn_train_features = extract_features_from_images(self.X_train)
-        
-        # Extract features from validation images
-        print("Extracting features from validation images...")
-        cnn_val_features = extract_features_from_images(self.X_val)
-        
-        # Extract features from test images
-        print("Extracting features from test images...")
-        cnn_test_features = extract_features_from_images(self.X_test)
-        
-        print(f"CNN features extracted: train shape {cnn_train_features.shape}, "
-              f"val shape {cnn_val_features.shape}, test shape {cnn_test_features.shape}")
-        
-        return cnn_train_features, cnn_val_features, cnn_test_features
-    
-    def apply_pca(self, n_components=50):
-        """
-        Apply Principal Component Analysis (PCA) to current images.
-        Fits PCA on training data and transforms train, validation, and test data.
-        
-        Args:
-            n_components (int): Number of principal components to retain
-            
-        Returns:
-            tuple: (pca_train_features, pca_val_features, pca_test_features, pca_object)
-        """
-        if self.X_train is None or self.X_val is None or self.X_test is None:
-            raise ValueError("Must call train_val_test_split() first")
-        
-        print(f"Applying PCA with {n_components} components")
-        
-        # Flatten images for PCA
-        X_train_flat = self.X_train.reshape(self.X_train.shape[0], -1)
-        X_val_flat = self.X_val.reshape(self.X_val.shape[0], -1)
-        X_test_flat = self.X_test.reshape(self.X_test.shape[0], -1)
-        
-        # Compute mean from training data
-        mean_image = np.mean(X_train_flat, axis=0)
-        
-        # Center the data
-        X_train_centered = X_train_flat - mean_image
-        X_val_centered = X_val_flat - mean_image
-        X_test_centered = X_test_flat - mean_image
-        
-        # Compute covariance matrix
-        n_samples = X_train_centered.shape[0]
-        cov_matrix = (X_train_centered @ X_train_centered.T) / (n_samples - 1)
-        
-        # Compute eigenvalues and eigenvectors
-        eigvals, eigvecs = np.linalg.eigh(cov_matrix)
-        
-        # Sort in descending order
-        idx = np.argsort(eigvals)[::-1]
-        eigvals = eigvals[idx]
-        eigvecs = eigvecs[:, idx]
-        
-        # Keep only positive eigenvalues
-        mask = eigvals > 1e-12
-        eigvals = eigvals[mask]
-        eigvecs = eigvecs[:, mask]
-        
-        # Map back to feature space
-        components = []
-        for i in range(min(n_components, len(eigvals))):
-            v = X_train_centered.T @ eigvecs[:, i]
-            v /= np.sqrt((n_samples - 1) * eigvals[i])
-            components.append(v)
-        
-        components = np.column_stack(components)
-        
-        # Transform data
-        pca_train_features = X_train_centered @ components
-        pca_val_features = X_val_centered @ components
-        pca_test_features = X_test_centered @ components
-        
-        # Create PCA object for later use
-        pca_object = {
-            'components': components,
-            'mean': mean_image,
-            'explained_variance': eigvals[:n_components],
-            'n_components': n_components
-        }
-        
-        print(f"PCA completed: train shape {pca_train_features.shape}, "
-              f"val shape {pca_val_features.shape}, test shape {pca_test_features.shape}")
-        
-        return pca_train_features, pca_val_features, pca_test_features, pca_object
-    
-    def apply_select_k_best(self, k=100, score_func=f_classif):
-        """
-        Apply SelectKBest feature selection to reduce dimensionality.
-        Works on any feature matrix (HoG, LBP, CNN features).
-        
-        Args:
-            k (int): Number of top features to select
-            score_func: Scoring function for feature selection (default: f_classif)
-            
-        Returns:
-            tuple: (selected_train_features, selected_val_features, selected_test_features, selector_object)
-        """
-        if self.X_train is None or self.X_val is None or self.X_test is None:
-            raise ValueError("Must call train_val_test_split() first")
-        
-        print(f"Applying SelectKBest with k={k} features")
-        
-        # Flatten images for feature selection
-        X_train_flat = self.X_train.reshape(self.X_train.shape[0], -1)
-        X_val_flat = self.X_val.reshape(self.X_val.shape[0], -1)
-        X_test_flat = self.X_test.reshape(self.X_test.shape[0], -1)
-        
-        # Initialize SelectKBest
-        selector = SelectKBest(score_func=score_func, k=k)
-        
-        # Fit on training data
-        X_train_selected = selector.fit_transform(X_train_flat, self.y_train)
-        
-        # Transform validation and test data
-        X_val_selected = selector.transform(X_val_flat)
-        X_test_selected = selector.transform(X_test_flat)
-        
-        print(f"SelectKBest completed: train shape {X_train_selected.shape}, "
-              f"val shape {X_val_selected.shape}, test shape {X_test_selected.shape}")
-        
-        # Create selector object for later use
-        selector_object = {
-            'selector': selector,
-            'selected_features': selector.get_support(),
-            'feature_scores': selector.scores_,
-            'k': k
-        }
-        
-        return X_train_selected, X_val_selected, X_test_selected, selector_object
-    
+
     # Getter methods
     def get_train_images(self):
         """Return current training images."""
