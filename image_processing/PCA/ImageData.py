@@ -1,6 +1,6 @@
 import numpy as np
 class ImageDataset:
-    def __init__(self, data_matrix, img_h: int, img_w: int):
+    def __init__(self, data_matrix: np.ndarray, img_h: int, img_w: int):
         self.data = data_matrix
         self.num_samples, self.num_features = data_matrix.shape
         self.image_height = img_h

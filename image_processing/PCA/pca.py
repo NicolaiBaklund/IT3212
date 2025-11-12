@@ -21,7 +21,7 @@ class PCA(ImageDataset):
         self.components: np.ndarray = None  # Principal components (eigenvectors) # type: ignore
         self.n_components: int = n_components
 
-    def fit(self, dataset: ImageDataset):
+    def fit(self, dataset: np.ndarray):
         """Fit the PCA model using an ImageDataset instance.
         Computes the covariance matrix, eigenvalues, and eigenvectors, then stores the top components.
         If num_samples < num_features, uses dual PCA approach for efficiency. Covariance matrix = XX^t/(n-1) instead of X^tX/(n-1).
@@ -30,12 +30,13 @@ class PCA(ImageDataset):
         Returns:
             None
         """
+        img_dataset = ImageDataset(dataset, dataset.shape[1], dataset.shape[1])
         # Center the data
-        self.data = dataset.data
-        self.num_samples = dataset.num_samples
-        self.num_features = dataset.num_features
-        self.mean = dataset.mean
-        self.centered_data = dataset.centered_data
+        self.data = img_dataset.data
+        self.num_samples = img_dataset.num_samples
+        self.num_features = img_dataset.num_features
+        self.mean = img_dataset.mean
+        self.centered_data = img_dataset.centered_data
 
         # Dual PCA approach if num_samples < num_features
         if self.num_samples < self.num_features:
