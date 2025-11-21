@@ -1,0 +1,12 @@
+If your model performe bad check that:
+
+1: Your PCA componment is a good choice. 95% gives good results for Random RandomForest
+
+2: Try to rerun the preprocess_dataset on the original images 
+set aligned_image_root to None, and adjust target_size if nescary. 
+
+3: try configure the Croping in preprocess_LBP 
+CROP_BASE = (0.18, 0.10, 0.64, 0.75)
+RESIZE_SHAPE = (256, 256) 
+#This values give good results for facial_emotion_recognition dataset
+
