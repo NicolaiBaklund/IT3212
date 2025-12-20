@@ -16,7 +16,19 @@ def load_grouped_splits(
     val_size: float = 3 / 15,
     random_state: int = 42,
 ) -> Tuple[Array, Array, Array, Array, Array, Array, np.ndarray]:
-    """Load dataset and return grouped train/val/test splits with sizes logged."""
+    """Load dataset and return grouped train/val/test splits with sizes logged.
+
+    Returns
+    -------
+    Tuple of:
+        X_train: np.ndarray
+        y_train: np.ndarray
+        X_val: np.ndarray
+        y_val: np.ndarray
+        X_test: np.ndarray
+        y_test: np.ndarray
+        class_names: np.ndarray
+    """
 
     dataset_path = Path(dataset_path)
     data = np.load(dataset_path)
