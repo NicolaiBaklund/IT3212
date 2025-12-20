@@ -197,6 +197,22 @@ def add_images(image1, image2, scale_factor=1.0):
     return result
 
 
+def calculate_rmse(imageA, imageB):
+    """
+    Beregner Root Mean Squared Error (RMSE) mellom to bilder.
+    """
+    # Konverter til float for å unngå overflow-problemer ved subtraksjon
+    imageA = imageA.astype(np.float64)
+    imageB = imageB.astype(np.float64)
+    
+    # Beregn MSE
+    mse = np.mean((imageA - imageB) ** 2)
+    
+    # Beregn RMSE
+    rmse = np.sqrt(mse)
+    return rmse
+
+
 def test_different_cutoff_frequencies(image_path, cutoff_frequencies=[10, 30, 50, 80], high_pass_filter=False):
     """
     Test the low-pass or high-pass filter with different cutoff frequencies for comparison.
@@ -286,6 +302,104 @@ def test_different_cutoff_frequencies(image_path, cutoff_frequencies=[10, 30, 50
     print(f"Plot saved to: {output_path}")
 
 
+def test_filter_rmse_vs_cutoff(image_path, high_pass_filter=False, num_metric_points=50, max_cutoff=None):
+    """
+    Test filter with different cutoff frequencies and plot RMSE vs percentage of coefficients cut away.
+    Similar to test_different_compression_ratios in task4.py.
+    
+    Args:
+        image_path (str): Path to the input grayscale image
+        high_pass_filter (bool): If True, test high-pass filter; if False, test low-pass filter
+        num_metric_points (int): Number of data points to calculate for the RMSE plot
+        max_cutoff (float): Maximum cutoff frequency to test. If None, uses image diagonal/2
+    """
+    filter_type = "High-pass" if high_pass_filter else "Low-pass"
+    print(f"\nCalculating {num_metric_points} data points for {filter_type} filter RMSE plot...")
+    
+    # Load the original image
+    original_image = load_grayscale_image(image_path)
+    height, width = original_image.shape
+    
+    # Apply DFT to get original spectrum
+    magnitude_spectrum, phase_spectrum, fft_result = apply_2d_dft(original_image)
+    
+    # Calculate maximum possible cutoff (diagonal of image / 2)
+    if max_cutoff is None:
+        max_cutoff = np.sqrt(height**2 + width**2) / 2
+    
+    # Generate cutoff frequencies to test
+    # For LPF: low cutoff = more coefficients cut away (more filtering)
+    # For HPF: high cutoff = more coefficients cut away (more filtering)
+    cutoff_frequencies = np.linspace(1, max_cutoff, num_metric_points)
+    
+    # Beholdere for resultater
+    plot_rmse_values = []
+    plot_cutoff_percentages = []
+    
+    for cutoff_freq in cutoff_frequencies:
+        # Create filter mask
+        if high_pass_filter:
+            filter_mask = create_highpass_filter_mask(original_image.shape, cutoff_freq)
+        else:
+            filter_mask = create_lowpass_filter_mask(original_image.shape, cutoff_freq)
+        
+        # Calculate percentage of coefficients cut away
+        # For LPF: mask=1 means keep, mask=0 means cut away
+        # For HPF: mask=0 means cut away (center), mask=1 means keep
+        if high_pass_filter:
+            # HPF: percentage cut away = percentage where mask == 0 (center region)
+            cutoff_percentage = (1.0 - np.sum(filter_mask) / filter_mask.size) * 100
+        else:
+            # LPF: percentage cut away = percentage where mask == 0 (outer region)
+            cutoff_percentage = (1.0 - np.sum(filter_mask) / filter_mask.size) * 100
+        
+        # Apply filter
+        filtered_fft = fft_result * filter_mask
+        filtered_image = reconstruct_from_fft(filtered_fft)
+        
+        # Calculate RMSE
+        rmse = calculate_rmse(original_image, filtered_image)
+        
+        plot_rmse_values.append(rmse)
+        plot_cutoff_percentages.append(cutoff_percentage)
+    
+    print("...Calculation complete.")
+    
+    # Create RMSE plot
+    plt.figure(figsize=(8, 5))
+    
+    # Plot RMSE vs percentage of coefficients cut away
+    plt.plot(plot_cutoff_percentages, plot_rmse_values, marker='o', markersize=2, linestyle='--', 
+             label=filter_type, linewidth=1.5)
+    
+    # Set titles and labels
+    plt.title(f'RMSE vs. Percentage of Cutoff Components ({filter_type} Filter)', fontsize=14, fontweight='bold')
+    plt.xlabel('Percentage of Cutoff Components (%)', fontsize=12)
+    plt.ylabel('Root Mean Squared Error (RMSE)', fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    
+    # Save RMSE plot
+    rmse_plot_path = f"../../data/{filter_type.lower()}_filter_rmse_vs_cutoff.png"
+    try:
+        plt.savefig(rmse_plot_path, dpi=150, bbox_inches='tight')
+        print(f"RMSE plot saved to: {rmse_plot_path}")
+    except Exception as e:
+        print(f"Could not save RMSE plot: {e}")
+    
+    # Display the plot
+    plt.show()
+    
+    # Print summary statistics
+    print(f"\n{filter_type} Filter RMSE Analysis:")
+    print("-" * 75)
+    print(f"Min RMSE: {min(plot_rmse_values):.2f} (at {plot_cutoff_percentages[np.argmin(plot_rmse_values)]:.2f}% cutoff)")
+    print(f"Max RMSE: {max(plot_rmse_values):.2f} (at {plot_cutoff_percentages[np.argmax(plot_rmse_values)]:.2f}% cutoff)")
+    print(f"Mean RMSE: {np.mean(plot_rmse_values):.2f}")
+    print("-" * 75)
+
+
 if __name__ == "__main__":
     # Example usage
     image_path = "../../data/BilderFourier/4.jpg"
@@ -305,5 +419,13 @@ if __name__ == "__main__":
     # Test different cutoff frequencies for high-pass filter
     print("\n=== Testing Different Cutoff Frequencies (High-pass) ===")
     test_different_cutoff_frequencies(image_path, [10, 30, 50, 80], high_pass_filter=True)
+    
+    # Test RMSE vs cutoff for low-pass filter
+    print("\n=== Testing RMSE vs Cutoff Percentage (Low-pass) ===")
+    test_filter_rmse_vs_cutoff(image_path, high_pass_filter=False, num_metric_points=50)
+    
+    # Test RMSE vs cutoff for high-pass filter
+    print("\n=== Testing RMSE vs Cutoff Percentage (High-pass) ===")
+    test_filter_rmse_vs_cutoff(image_path, high_pass_filter=True, num_metric_points=50)
 
 
